@@ -1,0 +1,3 @@
+name: arc-k8s
+runtime: dotnet
+description: Azure Arc-enabled Kubernetes on Minikube
