@@ -13,6 +13,7 @@
     in {
       devShells.default = pkgs.mkShell {
         packages = [
+          pkgs.k9s
           pkgs.kubernetes-helm
           pkgs.kubectl
           pkgs.pulumi-bin

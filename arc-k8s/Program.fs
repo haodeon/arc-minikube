@@ -34,7 +34,7 @@ let infra () =
         agentCertificate.PrivateKeyPem.Apply(fun pem ->
             let key = RSA.Create(4096)
             key.ImportFromPem(pem)
-            Convert.ToBase64String(key.ExportRSAPublicKey()))
+            key.ExportRSAPublicKey() |> Convert.ToBase64String)
 
     let createArcK8s (publicKey: Output<string>) =
         ConnectedCluster(
@@ -51,12 +51,14 @@ let infra () =
 
     let connectedCluster = createArcK8s base64Key
 
+    let stackConfig = Config()
+
     // Create an Azure Storage Account, name of account must match minikube extra config
     let storageAccount =
         StorageAccount(
             "azwi",
             StorageAccountArgs(
-                AccountName = "azarcwi",
+                AccountName = stackConfig.Require("storageAccountName"),
                 ResourceGroupName = resourceGroup.Name,
                 Sku = SkuArgs(Name = SkuName.Standard_LRS),
                 Kind = Kind.StorageV2,
@@ -64,7 +66,7 @@ let infra () =
             )
         )
 
-    let azureConfig = Pulumi.Config("azure-native")
+    let azureConfig = Config("azure-native")
     let location = azureConfig.Require("location")
     let subscriptionId = azureConfig.Require("subscriptionId")
     let tenantId = azureConfig.Require("tenantId")
@@ -122,7 +124,7 @@ let infra () =
             BlobContainerArgs(
                 AccountName = storageAccount.Name,
                 ResourceGroupName = resourceGroup.Name,
-                PublicAccess = PublicAccess.Container
+                PublicAccess = PublicAccess.Blob
             )
         )
 
@@ -132,9 +134,9 @@ let infra () =
     let jwksOutput =
         getJwks.Stdout.Apply(fun stdout -> StringAsset(stdout) :> AssetOrArchive)
 
-    let createJwks (jsonString: Output<AssetOrArchive>) =
+    let createOidcBlob path (jsonString: Output<AssetOrArchive>) =
         Blob(
-            "openid/v1/jwks",
+            path,
             BlobArgs(
                 AccountName = storageAccount.Name,
                 ContainerName = storageContainer.Name,
@@ -143,9 +145,9 @@ let infra () =
             )
         )
 
-    let jwks = createJwks jwksOutput
+    let jwks = createOidcBlob "openid/v1/jwks" jwksOutput
 
-    let oidcOutput =
+    let oidcDoc =
         let doc =
             {| issuer = Output.Format($"https://{storageAccount.Name}.blob.core.windows.net/{storageContainer.Name}/")
                jwks_uri =
@@ -156,21 +158,12 @@ let infra () =
                subject_types_support = [| "public" |]
                id_token_signing_alg_values_supported = [| "RS256" |] |}
 
-        let oidcConfig = doc |> Output.Create |> Output.JsonSerialize
-        oidcConfig.Apply(fun jsonString -> StringAsset(jsonString) :> AssetOrArchive)
+        doc
+        |> Output.Create
+        |> Output.JsonSerialize
+        |> Outputs.apply (fun jsonString -> StringAsset(jsonString) :> AssetOrArchive)
 
-    let createOidcDoc (doc: Output<AssetOrArchive>) =
-        Blob(
-            ".well-known/openid-configuration",
-            BlobArgs(
-                AccountName = storageAccount.Name,
-                ContainerName = storageContainer.Name,
-                ResourceGroupName = resourceGroup.Name,
-                Source = doc
-            )
-        )
-
-    let oidcDoc = createOidcDoc oidcOutput
+    let oidcDoc = createOidcBlob ".well-known/openid-configuration" oidcDoc
 
     let workloadIdentity =
         let values = Dictionary<string, obj>()
@@ -221,8 +214,9 @@ let infra () =
                 config.Add("workloadIdentity.enable", "true")
                 config.Add("workloadIdentity.azureClientId", clientId)
                 config)
+            |> InputMap.op_Implicit
 
-        createK8sExtension "flux" "Microsoft.Flux" (InputMap.op_Implicit configSettings)
+        createK8sExtension "flux" "Microsoft.Flux" configSettings
 
     let sourceController =
         let issuer =
@@ -263,7 +257,7 @@ let infra () =
         DeploymentPatch(
             "label-use-identity",
             DeploymentPatchArgs(
-                Metadata = ObjectMetaPatchArgs(Labels = label, Name = "source-controller", Namespace = "flux-system"),
+                Metadata = ObjectMetaPatchArgs(Name = "source-controller", Namespace = "flux-system"),
                 Spec =
                     DeploymentSpecPatchArgs(
                         Template = PodTemplateSpecPatchArgs(Metadata = ObjectMetaPatchArgs(Labels = label))
@@ -291,7 +285,10 @@ let infra () =
         |> Outputs.bind (fun storageKeys -> Output.CreateSecret(storageKeys.Keys[0].Value))
 
     // Export the primary key for the storage account
-    dict [ ("connectionString", primaryKey :> obj) ]
+    dict
+        [ ("connectionString", primaryKey :> obj)
+          ("resourceGroupName", resourceGroup.Name)
+          ("storageAccountName", storageAccount.Name) ]
 
 [<EntryPoint>]
 let main _ = Deployment.run infra
