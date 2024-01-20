@@ -20,7 +20,7 @@
         ];
         __ETC_PROFILE_NIX_SOURCED=1;
         shellHook = ''
-          export PATH=~/.pulumi/plugins/resource-kubernetes-v4.6.1:~/.pulumi/plugins/resource-tls-v5.0.0:$PATH
+          export PATH=~/.pulumi/plugins/resource-kubernetes-v4.6.1:~/.pulumi/plugins/resource-tls-v5.0.0:~/.pulumi/plugins/resource-random-v4.15.0:$PATH
         '';
       };
     });

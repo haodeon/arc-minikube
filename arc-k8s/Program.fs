@@ -6,6 +6,8 @@ open System.Security.Cryptography
 open Pulumi
 open Pulumi.FSharp
 open Pulumi.AzureNative.Authorization
+open Pulumi.AzureNative.KeyVault
+open Pulumi.AzureNative.KeyVault.Inputs
 open Pulumi.AzureNative.Kubernetes
 open Pulumi.AzureNative.Kubernetes.Inputs
 open Pulumi.AzureNative.KubernetesConfiguration
@@ -22,6 +24,11 @@ open Pulumi.Kubernetes.Core.V1
 open Pulumi.Kubernetes.Apps.V1
 open Pulumi.Command.Local
 open Pulumi.Tls
+
+let toInputList list = list |> List.map input |> inputList
+
+let mapT0InputList list =
+    list |> List.map Union.FromT0 |> List.map input |> inputList
 
 let infra () =
     // Create an Azure Resource Group
@@ -197,7 +204,7 @@ let infra () =
                     ),
                 ConfigurationSettings = configSettings
             ),
-            CustomResourceOptions(DependsOn = inputList [ input k8sAgent; input workloadIdentity ])
+            CustomResourceOptions(DependsOn = toInputList [ k8sAgent; workloadIdentity ])
         )
 
     let secretsProvider =
@@ -210,9 +217,11 @@ let infra () =
     let flux =
         let configSettings =
             fluxIdentity.ClientId.Apply(fun clientId ->
-                let config = Dictionary<string, string>()
-                config.Add("workloadIdentity.enable", "true")
-                config.Add("workloadIdentity.azureClientId", clientId)
+                let config =
+                    dict
+                        [ ("workloadIdentity.enable", "true")
+                          ("workloadIdentity.azureClientId", clientId) ]
+
                 config)
             |> InputMap.op_Implicit
 
@@ -229,16 +238,18 @@ let infra () =
                 ResourceName = fluxIdentity.Name,
                 Issuer = issuer,
                 Subject = "system:serviceaccount:flux-system:source-controller",
-                Audiences = inputList [ input "api://AzureADTokenExchange" ]
+                Audiences = toInputList [ "api://AzureADTokenExchange" ]
             )
         )
 
     let patchSourceServiceAccount =
         let patch =
             fluxIdentity.ClientId.Apply(fun clientId ->
-                let annotations = Dictionary<string, string>()
-                annotations.Add("azure.workload.identity/client-id", clientId)
-                annotations.Add("azure.workload.identity/tenant-id", tenantId)
+                let annotations =
+                    dict
+                        [ ("azure.workload.identity/client-id", clientId)
+                          ("azure.workload.identity/tenant-id", tenantId) ]
+
                 annotations)
 
         ServiceAccountPatch(
@@ -247,11 +258,11 @@ let infra () =
                 Metadata =
                     ObjectMetaPatchArgs(Annotations = patch, Name = "source-controller", Namespace = "flux-system")
             ),
-            CustomResourceOptions(DependsOn = inputList [ input flux ])
+            CustomResourceOptions(DependsOn = toInputList [ flux ])
         )
 
     let patchSourceDeployment =
-        let label = Dictionary<string, string>()
+        let label = InputMap<string>()
         label.Add("azure.workload.identity/use", "true")
 
         DeploymentPatch(
@@ -263,18 +274,52 @@ let infra () =
                         Template = PodTemplateSpecPatchArgs(Metadata = ObjectMetaPatchArgs(Labels = label))
                     )
             ),
-            CustomResourceOptions(DependsOn = inputList [ input flux ])
+            CustomResourceOptions(DependsOn = toInputList [ flux ])
         )
 
     let fluxBlobReader =
         RoleAssignment(
             "flux-blob-reader",
             RoleAssignmentArgs(
-                PrincipalId = Output.Format($"{fluxIdentity.PrincipalId.Apply(fun id -> id)}"),
+                PrincipalId = fluxIdentity.PrincipalId,
                 PrincipalType = "ServicePrincipal",
                 RoleDefinitionId =
                     "/providers/Microsoft.Authorization/roleDefinitions/2a2b9908-6ea1-4ae2-8e65-a410df84e7d1",
                 Scope = storageAccount.Id
+            )
+        )
+
+    let deployObjectId =
+        AzureNative.Authorization.GetClientConfig
+            .Invoke()
+            .Apply(fun result -> result.ObjectId)
+
+    let clusterKeyVault =
+        let accessPolicies =
+            [ AccessPolicyEntryArgs(
+                  ObjectId = deployObjectId,
+                  TenantId = tenantId,
+                  Permissions = PermissionsArgs(Secrets = mapT0InputList [ "set"; "delete"; "purge" ])
+              )
+              AccessPolicyEntryArgs(
+                  ObjectId = fluxIdentity.PrincipalId,
+                  TenantId = tenantId,
+                  Permissions = PermissionsArgs(Secrets = mapT0InputList [ "get" ])
+              ) ]
+            |> toInputList
+
+        Vault(
+            "arck8s",
+            VaultArgs(
+                ResourceGroupName = resourceGroup.Name,
+                VaultName = stackConfig.Require("keyVaultName"),
+                Properties =
+                    VaultPropertiesArgs(
+                        Sku = AzureNative.KeyVault.Inputs.SkuArgs(Family = SkuFamily.A, Name = SkuName.Standard),
+                        TenantId = tenantId,
+                        EnableSoftDelete = false,
+                        AccessPolicies = accessPolicies
+                    )
             )
         )
 
@@ -287,6 +332,10 @@ let infra () =
     // Export the primary key for the storage account
     dict
         [ ("connectionString", primaryKey :> obj)
+          ("clusterName", connectedCluster.Name)
+          ("fluxClientId", fluxIdentity.ClientId)
+          ("fluxIdentityName", fluxIdentity.Name)
+          ("keyVaultName", clusterKeyVault.Name)
           ("resourceGroupName", resourceGroup.Name)
           ("storageAccountName", storageAccount.Name) ]
 

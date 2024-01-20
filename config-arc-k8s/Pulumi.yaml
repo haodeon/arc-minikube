@@ -1,0 +1,3 @@
+name: config-arc-k8s
+runtime: dotnet
+description: Configure cluster services
