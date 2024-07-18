@@ -25,10 +25,8 @@ open Pulumi.Kubernetes.Apps.V1
 open Pulumi.Command.Local
 open Pulumi.Tls
 
-let toInputList list = list |> List.map input |> inputList
-
-let mapT0InputList list =
-    list |> List.map Union.FromT0 |> List.map input |> inputList
+let inputListFromT0<'a, 'b> (items: seq<'a>) : InputList<Union<'a, 'b>> =
+    items |> Seq.map Union.FromT0 |> toInputList
 
 let infra () =
     // Create an Azure Resource Group
@@ -299,12 +297,12 @@ let infra () =
             [ AccessPolicyEntryArgs(
                   ObjectId = deployObjectId,
                   TenantId = tenantId,
-                  Permissions = PermissionsArgs(Secrets = mapT0InputList [ "set"; "delete"; "purge" ])
+                  Permissions = PermissionsArgs(Secrets = inputListFromT0 [ "set"; "delete"; "purge" ])
               )
               AccessPolicyEntryArgs(
                   ObjectId = fluxIdentity.PrincipalId,
                   TenantId = tenantId,
-                  Permissions = PermissionsArgs(Secrets = mapT0InputList [ "get" ])
+                  Permissions = PermissionsArgs(Secrets = inputListFromT0 [ "get" ])
               ) ]
             |> toInputList
 

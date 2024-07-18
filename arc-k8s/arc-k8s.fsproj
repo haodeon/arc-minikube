@@ -14,9 +14,9 @@
     <PackageReference Include="Pulumi" Version="3.*" />
     <PackageReference Include="Pulumi.FSharp" Version="3.*" />
     <PackageReference Include="Pulumi.AzureNative" Version="2.*" />
-    <PackageReference Include="Pulumi.Kubernetes" Version="4.*" />
-    <PackageReference Include="Pulumi.Tls" Version="5.*" />
-    <PackageReference Include="Pulumi.Command" Version="0.9.2" />
+    <PackageReference Include="Pulumi.Kubernetes" Version="4.14.0" />
+    <PackageReference Include="Pulumi.Tls" Version="5.0.4" />
+    <PackageReference Include="Pulumi.Command" Version="1.*" />
   </ItemGroup>
 
 </Project>
